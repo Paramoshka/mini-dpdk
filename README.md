@@ -66,6 +66,64 @@ docker run --rm -it \
   - `dpdk-devbind.py -s` (если присутствует) или `lspci -nn | grep -i mellanox`
 - Логи приложения: раз в ~1 секунду печатается `stats: rx=.. tx=.. drop=..`. При 1 порте `tx=0`, `drop=rx` — ожидаемо.
 
+### SR‑IOV: проверка и управление VF (пример для PF `eth2`)
+
+- Проверить возможности и текущее число VF:
+
+```
+cat /sys/class/net/eth2/device/sriov_totalvfs
+cat /sys/class/net/eth2/device/sriov_numvfs
+```
+
+- Пересоздать 2 VF (сначала обнулить, затем задать желаемое количество):
+
+```
+echo 0 | tee /sys/class/net/eth2/device/sriov_numvfs
+echo 2 | tee /sys/class/net/eth2/device/sriov_numvfs
+```
+
+- Посмотреть их BDF (symlink `virtfn*` указывает на адрес устройства):
+
+```
+ls -l /sys/class/net/eth2/device/virtfn*
+# → …virtfn0 -> 0000:17:00.2, virtfn1 -> 0000:17:00.3
+```
+
+- (Опционально) задать MAC/доверие/antispoof для конкретных VF:
+
+```
+ip link set eth2 vf 0 mac 02:11:22:33:44:55 trust on spoofchk off
+ip link set eth2 vf 1 mac 02:11:22:33:44:66 trust on spoofchk off
+```
+
+Примечания:
+- Замените `eth2` на имя вашего PF.
+- Команды требуют прав root (используйте `sudo` при необходимости).
+
+#### Привязка драйверов (bind/unbind): PF на `mlx5_core`, VF на `vfio-pci`
+
+- Пример: PF `0000:17:00.0` оставить на `mlx5_core`, VF `0000:17:00.2` привязать к `vfio-pci`:
+
+```
+# (опционально) снять текущее привязки
+echo 0000:17:00.2 | sudo tee /sys/bus/pci/drivers/vfio-pci/unbind 2>/dev/null || true
+echo 0000:17:00.2 | sudo tee /sys/bus/pci/devices/0000:17:00.2/driver/unbind 2>/dev/null || true
+
+# привязать VF к vfio-pci
+echo 0000:17:00.2 | sudo tee /sys/bus/pci/drivers/vfio-pci/bind
+
+# убедиться, что PF на mlx5_core (при необходимости — привязать)
+echo 0000:17:00.0 | sudo tee /sys/bus/pci/drivers/mlx5_core/bind
+
+# проверить
+lspci -k -s 17:00.2
+lspci -k -s 17:00.0
+```
+
+Заметки:
+- Общий случай для Intel/других NIC: PF остаётся в «родном» драйвере, VF — в `vfio-pci`.
+- Для Mellanox (`mlx5`) обычно VFIO не требуется: и PF, и VF работают с `mlx5_core` (PMD mlx5 использует драйвер ядра и RDMA).
+
 ## Структура репозитория
 
 - `app/mini/main.c` — исходник (L2 0↔1, 2↔3; при 1 порте — дроп).
@@ -75,4 +133,3 @@ docker run --rm -it \
 - `k8s/pod-vfio.yaml` — пример Pod‑манифеста (hostNetwork, hugepages 2Mi, /dev/infiniband).
 
 ## Частые проблемы
-
