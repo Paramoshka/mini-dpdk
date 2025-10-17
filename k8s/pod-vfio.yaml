@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mini-dpdk-vfio
+  labels:
+    app: mini-dpdk
+spec:
+  # Helpful for debugging; allows seeing host devices and sysfs
+  hostPID: true
+  hostNetwork: true
+  dnsPolicy: ClusterFirstWithHostNet
+  restartPolicy: Never
+  containers:
+    - name: app
+      image: paramoshka/mini-dpdk:latest
+      imagePullPolicy: Always
+      securityContext:
+        privileged: true
+        runAsUser: 0
+      env:
+        # Автодискавери устройств (без явного allow-list)
+        - name: LCORES
+          value: "0"
+        - name: DPDK_MEM
+          value: "128"
+        - name: EAL_EXTRA
+          value: "--allow=0000:17:00.2 --allow=0000:17:00.3 --file-prefix=pod1 --log-level=lib.eal:info"
+        # Доп. devargs для mlx5 (для CX-4 Lx часто помогает отключить DV)
+        - name: MLX5_DEVARGS_EXTRA
+          value: "dv_flow_en=0,dv_esw_en=0"
+        # Небольшая пауза для отладки/exec внутрь
+        - name: DEBUG_SLEEP
+          value: "3"
+      args: ["--"]
+      resources:
+        limits:
+          cpu: "500m"
+          memory: "128Mi"
+          hugepages-2Mi: 1100Mi
+        requests:
+          cpu: "100m"
+          memory: "64Mi"
+          hugepages-2Mi: 1100Mi
+      volumeMounts:
+        - name: hugetlbfs
+          mountPath: /dev/hugepages
+        - name: infiniband
+          mountPath: /dev/infiniband
+      # Optional: print container's view of PCI and vfio for quick sanity
+      command: ["/entrypoint.sh"]
+    
+  volumes:
+    - name: hugetlbfs
+      emptyDir:
+        medium: HugePages-2Mi
+    - name: infiniband
+      hostPath:
+        path: /dev/infiniband
+        type: DirectoryOrCreate
