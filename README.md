@@ -9,28 +9,26 @@
   - Сборка бинарника: `make`
 - Сборка контейнера: `docker build -t mini-dpdk:local .`
 - Запуск в Kubernetes: отредактируйте `k8s/pod-vfio.yaml` (см. ниже) и примените:
-  - `kubectl apply -f k8s/pod-vfio.yaml`
+  - `kubectl create -f k8s/pod-vfio.yaml`
   - `kubectl logs -f pod/mini-dpdk-vfio`
 
 ## Kubernetes: манифест и переменные
 
 - Манифест `k8s/pod-vfio.yaml` включает:
   - hugepages 2Mi (`limits/requests: hugepages-2Mi` + `emptyDir: HugePages-2Mi`)
-  - `hostNetwork: true` и монтирование `/dev/infiniband` (важно для Mellanox mlx5)
   - `privileged: true` для упрощения диагностики
 - Переменные окружения:
   - `LCORES`: список lcores (например `0`)
   - `DPDK_MEM`: объём памяти EAL в МБ (например `32` для 64Mi hugepages)
   - `EAL_EXTRA`: дополнительные флаги EAL (например `--file-prefix=pod1`)
   - Для Mellanox (рекомендуется):
-    - `MLX5_IFNAMES`: имена интерфейсов через запятую, например `eth4,eth5`
     - `MLX5_DEVARGS_EXTRA`: доп. devargs, например `dv_flow_en=0,dv_esw_en=0`
   - Для отладки: `DEBUG_SLEEP=300` или `DEBUG_HOLD=1` (задерживает старт для exec)
 
 Применение:
 
 ```
-kubectl apply -f k8s/pod-vfio.yaml
+kubectl create -f k8s/pod-vfio.yaml
 kubectl logs -f pod/mini-dpdk-vfio
 ```
 
@@ -77,8 +75,4 @@ docker run --rm -it \
 - `k8s/pod-vfio.yaml` — пример Pod‑манифеста (hostNetwork, hugepages 2Mi, /dev/infiniband).
 
 ## Частые проблемы
-
-- “No available Ethernet ports” — не подгрузился PMD или интерфейсы не видны контейнеру. Проверьте `hostNetwork: true`, `/dev/infiniband`, и что в логах виден `librte_net_mlx5`.
-- “Cannot create mbuf pool … No such file or directory” — не подхватился mempool driver. В образе есть `librte_mempool_ring.so`, entrypoint его подгружает (`-d`).
-- “Could not find bus \"pci\"” — решается явной линковкой с `-lrte_bus_pci` (сделано в Makefile) и присутствием `librte_bus_pci.so` в образе.
 
