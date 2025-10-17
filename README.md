@@ -1,114 +1,84 @@
-# mini-dpdk: Примитивное DPDK приложение для Pod
+# mini-dpdk — минимальное DPDK‑приложение для Kubernetes/Docker
 
-Это минимальное DPDK‑приложение, которое инициализирует EAL, конфигурирует все доступные порты и выполняет простую L2 пересылку: порт 0 <-> 1, 2 <-> 3 и т.д. Если доступен только один порт — пакеты просто читаются и сбрасываются. В логе показывается MAC/драйвер и периодическая статистика.
+Минимальный L2 форвардер на DPDK: инициализирует EAL, поднимает доступные порты и пересылает трафик попарно 0↔1, 2↔3 и т.д. При одном порте пакеты читаются и сбрасываются. В логах отображаются драйвер, MAC и периодическая статистика.
 
-## Сборка локально (хост)
+## Быстрый старт
 
-Требуется установленный DPDK (dev-пакеты) и pkg-config.
-sudo apt-get install -y dpdk dpdk-dev libnuma-dev build-essential pkg-config
-- Ubuntu: ``
-- Сборка: `make`
-- Запуск (root + заранее забайнденные VF под vfio-pci):
-  - Пример: `sudo ./build/mini-dpdk -l 0 -a 0000:af:00.1 -a 0000:af:00.2 --`
+- Сборка локально (Ubuntu):
+  - Зависимости: `sudo apt-get install -y dpdk dpdk-dev libnuma-dev build-essential pkg-config`
+  - Сборка бинарника: `make`
+- Сборка контейнера: `docker build -t mini-dpdk:local .`
+- Запуск в Kubernetes: отредактируйте `k8s/pod-vfio.yaml` (см. ниже) и примените:
+  - `kubectl apply -f k8s/pod-vfio.yaml`
+  - `kubectl logs -f pod/mini-dpdk-vfio`
 
-## Сборка контейнера
+## Kubernetes: манифест и переменные
 
-- `docker build -t mini-dpdk:local .`
+- Манифест `k8s/pod-vfio.yaml` включает:
+  - hugepages 2Mi (`limits/requests: hugepages-2Mi` + `emptyDir: HugePages-2Mi`)
+  - `hostNetwork: true` и монтирование `/dev/infiniband` (важно для Mellanox mlx5)
+  - `privileged: true` для упрощения диагностики
+- Переменные окружения:
+  - `LCORES`: список lcores (например `0`)
+  - `DPDK_MEM`: объём памяти EAL в МБ (например `32` для 64Mi hugepages)
+  - `EAL_EXTRA`: дополнительные флаги EAL (например `--file-prefix=pod1`)
+  - Для Mellanox (рекомендуется):
+    - `MLX5_IFNAMES`: имена интерфейсов через запятую, например `eth4,eth5`
+    - `MLX5_DEVARGS_EXTRA`: доп. devargs, например `dv_flow_en=0,dv_esw_en=0`
+  - Для отладки: `DEBUG_SLEEP=300` или `DEBUG_HOLD=1` (задерживает старт для exec)
 
-В образе используется многоэтапная сборка на Ubuntu 22.04, устанавливаются пакеты `dpdk`/`dpdk-dev`, затем собирается бинарник.
-
-## Запуск в Docker (быстрый тест)
-
-Нужно, чтобы на хосте были заранее:
-- Включён IOMMU и загружен `vfio-pci` (`sudo modprobe vfio-pci`)
-- VF интерфейсы привязаны к `vfio-pci` (например `dpdk-devbind.py -b vfio-pci 0000:af:00.1 0000:af:00.2`)
-
-Минимальный запуск (пример, замените BDF):
-
-```
-docker run --rm -it \
-  --privileged \
-  --ulimit memlock=-1 \
-  --mount type=tmpfs,destination=/dev/hugepages,tmpfs-mode=1770 \
-  -e DPDK_ALLOW="0000:af:00.1,0000:af:00.2" \
-  -e LCORES=0 -e DPDK_MEM=1024 \
-  -v /dev/vfio:/dev/vfio \
-  mini-dpdk:local --
-```
-
-Переменная `DPDK_ALLOW` — список PCI BDF через запятую. По умолчанию приложение запустится с EAL `-l ${LCORES:-0} -m ${DPDK_MEM:-1024}`. Любые дополнительные EAL‑аргументы можно передать через `EAL_EXTRA`, например `--file-prefix=pod1`.
-
-## Запуск в Kubernetes (Pod)
-
-1) Убедитесь, что на ноде настроены hugepages (например `hugepages-2Mi`) и VF‑интерфейсы привязаны к `vfio-pci`.
-2) Отредактируйте `k8s/pod-vfio.yaml` и подставьте ваши BDF в `env: DPDK_ALLOW`.
-3) Задеплойте Pod:
+Применение:
 
 ```
 kubectl apply -f k8s/pod-vfio.yaml
 kubectl logs -f pod/mini-dpdk-vfio
 ```
 
-Манифест запускает контейнер с `privileged: true`, монтирует `/dev/vfio` и `hugepages` (2Mi) в `/dev/hugepages`. Значения hugepages в `resources.requests/limits` при необходимости скорректируйте под вашу кластерную политику.
+## Docker (локальная проверка)
 
-Если вы используете SR-IOV Network Device Plugin, вместо привилегированного пода лучше запросить VF как ресурс и использовать CNI‑сеть. Данное приложение совместимо, так как для DPDK достаточно, чтобы внутри контейнера были доступны VF (через vfio) и hugepages.
+Для VFIO используйте привязку к `vfio-pci` (актуально для многих PMD, но не для Mellanox). Для Mellanox (mlx5) VFIO не требуется — PMD работает поверх `mlx5_core` и RDMA.
 
-## Полезные заметки
+Пример запуска (замените интерфейсы под вашу систему):
 
-- В DPDK EAL используйте `-a <BDF>`/`--allow <BDF>` для явного разрешения нужных устройств. Можно оставить пустым, если хотите открыть все доступные PCI‑девайсы — но в pod‑среде это часто избыточно.
-- Для нескольких пар портов трафик идёт попарно: 0<->1, 2<->3, и т.д. Если порт один — пакеты будут сбрасываться.
-- Для корректного выделения hugepages в Kubernetes важны и кворум ноды, и настройки kubelet (`--feature-gates=HugePages`).
-- Для быстрой диагностики смотрите логи и `stats: rx=... tx=... drop=...` каждые ~1 секунду.
-- kubectl get nodes -o custom-columns=NAME:.metadata.name,HP2Mi:.status.allocatable.hugepages-2Mi,HP1Gi:.status.allocatable.hugepages-1Gi
-- kubectl describe node networklab-sriov-0 | grep -A3 -i hugepages
+```
+docker run --rm -it \
+  --privileged \
+  --ulimit memlock=-1 \
+  --mount type=tmpfs,destination=/dev/hugepages,tmpfs-mode=1770 \
+  -e LCORES=0 -e DPDK_MEM=128 \
+  -e MLX5_IFNAMES="eth4,eth5" \
+  mini-dpdk:local --
+```
 
-## Структура
+## Заметки по Mellanox (mlx5)
 
-- `app/mini/main.c` — исходник минимального приложения.
-- `Makefile` — сборка локально через pkg-config (`libdpdk`).
-- `Dockerfile` — многоэтапная сборка образа.
-- `docker/entrypoint.sh` — простой wrapper для сборки EAL‑аргументов из env.
-- `k8s/pod-vfio.yaml` — пример Pod‑манифеста для VFIO.
+- Для mlx5 не нужно привязывать VF к `vfio-pci` — используйте драйвер ядра `mlx5_core` и доступ к `/dev/infiniband`.
+- Не смешивайте PF и VF в одном запуске; лучше использовать пару VF (например `eth4,eth5`).
+- Если указываете BDF, добавляйте устройства отдельно: несколько `-a` или через `DPDK_ALLOW="0000:bb:dd.f,0000:bb:dd.f"` (entrypoint развернёт в `-a ... -a ...`).
+- Для CX‑4 Lx часто помогает отключить DV/ESW: `MLX5_DEVARGS_EXTRA="dv_flow_en=0,dv_esw_en=0"`.
 
+## Отладка и полезные команды
 
+- Проверка hugepages на ноде:
+  - `kubectl get nodes -o custom-columns=NAME:.metadata.name,HP2Mi:.status.allocatable.hugepages-2Mi,HP1Gi:.status.allocatable.hugepages-1Gi`
+  - `kubectl describe node <node> | grep -A3 -i hugepages`
+- Внутри контейнера:
+  - `env | grep -E 'RTE_|LD_LIBRARY_PATH'`
+  - `find /usr/local/lib /usr/local/lib/dpdk -name 'librte_net_mlx5*'`
+  - `dpdk-devbind.py -s` (если присутствует) или `lspci -nn | grep -i mellanox`
+- Логи приложения: раз в ~1 секунду печатается `stats: rx=.. tx=.. drop=..`. При 1 порте `tx=0`, `drop=rx` — ожидаемо.
 
-# Прочее
+## Структура репозитория
 
-# 1) Включить IOMMU (проверьте; если нет — добавить в загрузку и перезагрузить):
-# в /proc/cmdline должны быть: intel_iommu=on iommu=pt   # (или amd_iommu=on)
-cat /proc/cmdline
+- `app/mini/main.c` — исходник (L2 0↔1, 2↔3; при 1 порте — дроп).
+- `Makefile` — сборка через `pkg-config libdpdk` (динамическая линковка, явные шины и mempool ring).
+- `Dockerfile` — многоэтапная сборка, рантайм с `rdma-core`, `libmlx5` и т.д.
+- `docker/entrypoint.sh` — собирает EAL‑аргументы из env, подгружает PMD/плагины, поддерживает отладочные задержки.
+- `k8s/pod-vfio.yaml` — пример Pod‑манифеста (hostNetwork, hugepages 2Mi, /dev/infiniband).
 
-# 2) Загрузить vfio
-sudo modprobe vfio-pci
+## Частые проблемы
 
-# 3) Отвязать VF от mlx5_core и привязать к vfio-pci (BDF вашей VF: 0000:17:00.2)
-sudo /usr/local/bin/dpdk-devbind.py -s || true         # посмотреть список (если есть)
-sudo /usr/local/bin/dpdk-devbind.py -b vfio-pci 0000:17:00.0
-# Если скрипта нет:
-# echo 0000:17:00.2 | sudo tee /sys/bus/pci/drivers/mlx5_core/unbind
-# echo 15b3 1018 | sudo tee /sys/bus/pci/drivers/vfio-pci/new_id   # (VID:DID пример для Mellanox)
-# echo 0000:17:00.2 | sudo tee /sys/bus/pci/drivers/vfio-pci/bind
-
-# 4) Проверьте, что устройство теперь под vfio-pci
-readlink /sys/bus/pci/devices/0000:17:00.2/driver
-# -> должен указывать на .../vfio-pci
-
-# 5) Убедитесь, что /dev/vfio/* существует
-ls -l /dev/vfio
-echo "vm.nr_hugepages = 256" | sudo tee /etc/sysctl.d/99-hugepages.conf
-sudo sysctl --system
-sudo systemctl restart kubelet  # по необходимости
-kubectl describe node <имя-ноды> | sed -n '/Allocatable:/,/Events:/p'
-
-
-# вариант через dpdk-devbind.py
-sudo /usr/local/bin/dpdk-devbind.py -b mlx5_core 0000:17:00.0
-
-# или руками:
-echo 0000:17:00.2 | sudo tee /sys/bus/pci/drivers/vfio-pci/unbind
-echo 0000:17:00.2 | sudo tee /sys/bus/pci/drivers/mlx5_core/bind
-
-
-/usr/local/bin/dpdk-devbind.py -s | grep 17:00.2
-# должно быть: drv=mlx5_core (а не vfio-pci)
+- “No available Ethernet ports” — не подгрузился PMD или интерфейсы не видны контейнеру. Проверьте `hostNetwork: true`, `/dev/infiniband`, и что в логах виден `librte_net_mlx5`.
+- “Cannot create mbuf pool … No such file or directory” — не подхватился mempool driver. В образе есть `librte_mempool_ring.so`, entrypoint его подгружает (`-d`).
+- “Could not find bus \"pci\"” — решается явной линковкой с `-lrte_bus_pci` (сделано в Makefile) и присутствием `librte_bus_pci.so` в образе.
 
