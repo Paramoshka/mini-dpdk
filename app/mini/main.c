@@ -7,6 +7,10 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <unistd.h>
+#include <string.h>
+#include <stdlib.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
 
 #include <rte_common.h>
 #include <rte_eal.h>
@@ -17,6 +21,9 @@
 #include <rte_log.h>
 #include <rte_cycles.h>
 #include <rte_branch_prediction.h>
+#include <rte_ether.h>
+#include <rte_ip.h>
+#include <rte_icmp.h>
 
 #define RX_RING_SIZE 512
 #define TX_RING_SIZE 512
@@ -30,6 +37,52 @@ static void handle_signal(int sig)
 {
     (void)sig;
     force_quit = true;
+}
+
+static void inspect_for_icmp(uint16_t port_id, const struct rte_mbuf *mbuf)
+{
+    const uint16_t pkt_len = rte_pktmbuf_pkt_len(mbuf);
+    const uint16_t data_len = rte_pktmbuf_data_len(mbuf);
+    if (pkt_len < sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_icmp_hdr))
+        return;
+    if (data_len < sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr))
+        return;
+
+    const struct rte_ether_hdr *eth = rte_pktmbuf_mtod(mbuf, const struct rte_ether_hdr *);
+    if (eth->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4))
+        return;
+
+    const struct rte_ipv4_hdr *ipv4 = (const struct rte_ipv4_hdr *)(eth + 1);
+    const uint16_t ip_hdr_len = (ipv4->version_ihl & 0x0f) * 4;
+    if (ip_hdr_len < sizeof(struct rte_ipv4_hdr))
+        return;
+    if (pkt_len < sizeof(struct rte_ether_hdr) + ip_hdr_len + sizeof(struct rte_icmp_hdr))
+        return;
+    if (data_len < sizeof(struct rte_ether_hdr) + ip_hdr_len)
+        return;
+    if (ipv4->next_proto_id != IPPROTO_ICMP)
+        return;
+
+    const uint8_t *l4 = (const uint8_t *)ipv4 + ip_hdr_len;
+    const struct rte_icmp_hdr *icmp = (const struct rte_icmp_hdr *)l4;
+
+    char src[INET_ADDRSTRLEN];
+    char dst[INET_ADDRSTRLEN];
+    struct in_addr src_addr = { .s_addr = ipv4->src_addr };
+    struct in_addr dst_addr = { .s_addr = ipv4->dst_addr };
+
+    if (inet_ntop(AF_INET, &src_addr, src, sizeof(src)) == NULL)
+        snprintf(src, sizeof(src), "(invalid)");
+    if (inet_ntop(AF_INET, &dst_addr, dst, sizeof(dst)) == NULL)
+        snprintf(dst, sizeof(dst), "(invalid)");
+
+    printf("port %u ICMP type=%u code=%u %s -> %s len=%u\n",
+           port_id,
+           icmp->icmp_type,
+           icmp->icmp_code,
+           src,
+           dst,
+           pkt_len);
 }
 
 static void print_port_info(uint16_t port_id)
@@ -162,6 +215,9 @@ int main(int argc, char **argv)
 
             uint16_t peer = port_id ^ 1; // 0<->1, 2<->3, ...
             uint16_t sent = 0;
+
+            for (uint16_t i = 0; i < nb_rx; i++)
+                inspect_for_icmp(port_id, bufs[i]);
 
             if (nb_ports >= 2 && peer < nb_ports) {
                 // In L2 forward, swap src/dst MAC if needed (not strictly required)
