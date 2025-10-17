@@ -24,6 +24,14 @@
   - Для Mellanox (рекомендуется):
     - `MLX5_DEVARGS_EXTRA`: доп. devargs, например `dv_flow_en=0,dv_esw_en=0`
   - Для отладки: `DEBUG_SLEEP=300` или `DEBUG_HOLD=1` (задерживает старт для exec)
+  - ICMP-генератор (опционально — создаёт ICMP Echo Request на выбранном порту):
+    - `ICMP_GEN_PORT`: индекс DPDK-порта, с которого отправлять ICMP.
+    - `ICMP_GEN_SRC_IP`: исходный IPv4-адрес в пакетах (например `192.0.2.1`).
+    - `ICMP_GEN_DST_IP`: целевой IPv4-адрес (например `192.0.2.2`).
+    - `ICMP_GEN_DST_MAC`: MAC-адрес назначения в формате `aa:bb:cc:dd:ee:ff`.
+    - `ICMP_GEN_INTERVAL_MS`: (опционально) период отправки в миллисекундах, по умолчанию `1000`.
+    - `ICMP_GEN_PAYLOAD_LEN`: (опционально) размер полезной нагрузки ICMP в байтах, по умолчанию `32`.
+    - Источник L2 (MAC) берётся автоматически с выбранного порта; первый пакет отправляется сразу после запуска, далее — с заданным интервалом.
 
 Применение:
 
@@ -45,8 +53,26 @@ docker run --rm -it \
   --mount type=tmpfs,destination=/dev/hugepages,tmpfs-mode=1770 \
   -e LCORES=0 -e DPDK_MEM=128 \
   -e MLX5_IFNAMES="eth4,eth5" \
-  mini-dpdk:local --
+mini-dpdk:local --
 ```
+
+Пример проверки связи между двумя хостами с прямым подключением (каждый запускает `mini-dpdk` на своём VF/интерфейсе):
+
+```
+# Хост A
+export ICMP_GEN_PORT=0
+export ICMP_GEN_SRC_IP=192.0.2.1
+export ICMP_GEN_DST_IP=192.0.2.2
+export ICMP_GEN_DST_MAC=aa:bb:cc:dd:ee:01  # MAC хоста B
+
+# Хост B
+export ICMP_GEN_PORT=0
+export ICMP_GEN_SRC_IP=192.0.2.2
+export ICMP_GEN_DST_IP=192.0.2.1
+export ICMP_GEN_DST_MAC=aa:bb:cc:dd:ee:02  # MAC хоста A
+```
+
+После запуска оба процесса будут раз в секунду рассылать ICMP Echo Request; ответы можно увидеть в логах (`inspect_for_icmp` печатает входящие ICMP), а также проверять результирующий трафик на целевых интерфейсах.
 
 ## Заметки по Mellanox (mlx5)
 
