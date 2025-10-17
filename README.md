@@ -111,6 +111,8 @@ echo 0000:17:00.2 | sudo tee /sys/bus/pci/devices/0000:17:00.2/driver/unbind 2>/
 
 # привязать VF к vfio-pci
 echo 0000:17:00.2 | sudo tee /sys/bus/pci/drivers/vfio-pci/bind
+или
+/usr/local/bin/dpdk-devbind.py -b vfio-pci 0000:17:00.2
 
 # убедиться, что PF на mlx5_core (при необходимости — привязать)
 echo 0000:17:00.0 | sudo tee /sys/bus/pci/drivers/mlx5_core/bind
@@ -133,3 +135,4 @@ lspci -k -s 17:00.0
 - `k8s/pod-vfio.yaml` — пример Pod‑манифеста (hostNetwork, hugepages 2Mi, /dev/infiniband).
 
 ## Частые проблемы
+- При запуске в Kubernetes не забывайте включить `hostNetwork: true` в Pod — без него VF не видны внутри контейнера и DPDK не находит порты.
